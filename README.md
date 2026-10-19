@@ -7,6 +7,14 @@ An **unofficial community port** of [QuickSell 4.3.0](https://github.com/TadMaj/
 
 ---
 
+## Download
+
+Prebuilt package: **[Releases](https://github.com/Crystalpiny/QuickSell-SPT-5.0BE/releases)**
+
+The zip mirrors the SPT folder layout (`BepInEx/...` and `SPT_Runtime/...`), so it can be extracted directly into the SPT root.
+
+---
+
 ## Features
 
 - **Right-click quick sell**
