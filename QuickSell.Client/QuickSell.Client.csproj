@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>QuickSell</AssemblyName>
+    <RootNamespace>QuickSell</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Version>4.3.0</Version>
+    <AssemblyVersion>4.3.0.0</AssemblyVersion>
+    <GameRoot Condition="'$(GameRoot)' == ''">$(SPT_ROOT)</GameRoot>
+    <BepInExCoreDir>$(GameRoot)\BepInEx\core</BepInExCoreDir>
+    <InteropDir>$(GameRoot)\BepInEx\interop</InteropDir>
+    <SptushonkaDir>$(GameRoot)\BepInEx\plugins\sptushonka</SptushonkaDir>
+  </PropertyGroup>
+
+  <Target Name="ValidateGameRoot" BeforeTargets="PrepareForBuild" Condition="'$(GameRoot)' == ''">
+    <Error Text="SPT root not set. Pass -p:SPT_ROOT=C:\path\to\SPT (the folder containing EscapeFromTarkov.exe, BepInEx and SPT_Runtime)." />
+  </Target>
+
+  <ItemGroup>
+    <Compile Include="UIFixesInteropStub.cs" />
+    <Compile Include="Il2CppConv.cs" />
+    <Compile Include="..\Tarkov-QuickSell\**\*.cs" Exclude="..\Tarkov-QuickSell\obj\**;..\Tarkov-QuickSell\bin\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core"><HintPath>$(BepInExCoreDir)\BepInEx.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP"><HintPath>$(BepInExCoreDir)\BepInEx.Unity.IL2CPP.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(BepInExCoreDir)\0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(BepInExCoreDir)\Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(InteropDir)\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Comfort"><HintPath>$(InteropDir)\Comfort.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Comfort.Unity"><HintPath>$(InteropDir)\Comfort.Unity.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="CommonExtensions"><HintPath>$(InteropDir)\CommonExtensions.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="ItemComponent.Types"><HintPath>$(InteropDir)\ItemComponent.Types.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Newtonsoft.Json"><HintPath>$(InteropDir)\Newtonsoft.Json.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sirenix.Serialization"><HintPath>$(InteropDir)\Sirenix.Serialization.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sirenix.OdinInspector.Attributes"><HintPath>$(InteropDir)\Sirenix.OdinInspector.Attributes.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.TextMeshPro"><HintPath>$(InteropDir)\Unity.TextMeshPro.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(InteropDir)\UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(InteropDir)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(InteropDir)\UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(InteropDir)\UnityEngine.InputLegacyModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(InteropDir)\UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UI"><HintPath>$(InteropDir)\UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UIModule"><HintPath>$(InteropDir)\UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(InteropDir)\Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Diz.Binding"><HintPath>$(InteropDir)\Diz.Binding.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SemanticVersioning"><HintPath>$(GameRoot)\SPT_Runtime\SemanticVersioning.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SPTushonka.Common"><HintPath>$(SptushonkaDir)\SPTushonka.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SPTushonka.Reflection"><HintPath>$(SptushonkaDir)\SPTushonka.Reflection.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>

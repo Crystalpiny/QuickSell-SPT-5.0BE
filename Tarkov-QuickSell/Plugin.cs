@@ -1,0 +1,585 @@
+using BepInEx;
+using BepInEx.Unity.IL2CPP;
+using BepInEx.Unity.IL2CPP.Configuration;
+using BepInEx.Configuration;
+using BepInEx.Logging;
+using Newtonsoft.Json.Linq;
+using QuickSell.Patches;
+using SPTushonka.Reflection.Patching;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using UnityEngine;
+
+namespace QuickSell
+{
+    [BepInPlugin("com.blackhawk.quicksell", "BlackHawk-QuickSell", "4.3.0")]
+    // UI Fixes 6.0 (SPT 4.1) changed its GUID from "Tyfon.UIFixes" to "com.tyfon.uifixes".
+    // Both are declared so load order is correct against either version.
+    // Only the current GUID is declared. The legacy "Tyfon.UIFixes" was kept for a while for
+    // backwards compatibility, but UI Fixes now warns in the log about mods still depending on it,
+    // and any 4.1-era build is 6.0 or newer regardless.
+    [BepInDependency("com.tyfon.uifixes", BepInDependency.DependencyFlags.SoftDependency)]
+    public class Plugin : BasePlugin
+    {
+        // Sections are numbered because the configuration manager sorts them alphabetically;
+        // without the prefix they would appear in an arbitrary order.
+        private const string SectionSelling = "1. Selling";
+        private const string SectionTooltips = "2. Tooltips";
+        private const string SectionColors = "3. Colors";
+        private const string SectionSounds = "4. Sounds";
+        private const string SectionDebug = "9. Debug";
+
+        private static readonly Version UIFixesMinimumVersion = new(2, 5);
+        private static readonly string[] UIFixesPluginIds = { "com.tyfon.uifixes", "Tyfon.UIFixes" };
+
+        public static ManualLogSource LogSource;
+
+        // ------------------------------------------------------------------ selling
+
+        private static ConfigEntry<bool> _enableQuickSellFlea;
+        private static ConfigEntry<bool> _enableQuickSellTraders;
+        private static ConfigEntry<bool> _showConfirmationDialog;
+        private static ConfigEntry<bool> _ignoreFleaCapacity;
+        private static ConfigEntry<bool> _sellFromContainers;
+        private static ConfigEntry<bool> _sellFromSecureContainer;
+        private static ConfigEntry<int> _avgPricePercent;
+        private static ConfigEntry<string> _tradersBlacklist;
+        private static ConfigEntry<string> _availableTraders;
+        private static ConfigEntry<bool> _disableKeybinds;
+
+        // Every setting is exposed as a property reading the live entry, so the rest of the mod
+        // keeps using Plugin.Something with no idea the value now comes from the F12 menu, and
+        // changes take effect the moment they are made.
+        public static bool EnableQuickSellFlea => _enableQuickSellFlea?.Value ?? true;
+        public static bool EnableQuickSellTraders => _enableQuickSellTraders?.Value ?? true;
+        public static bool ShowConfirmationDialog => _showConfirmationDialog?.Value ?? true;
+        public static bool IgnoreFleaCapacity => _ignoreFleaCapacity?.Value ?? false;
+        public static bool SellFromContainers => _sellFromContainers?.Value ?? true;
+        /// <summary>
+        /// Defaults to FALSE deliberately. A secure container holds what people least want to
+        /// lose, selling cannot be undone, and with multi-select one mistake takes several items.
+        /// </summary>
+        public static bool SellFromSecureContainer => _sellFromSecureContainer?.Value ?? false;
+        public static double AvgPricePercent => _avgPricePercent?.Value ?? 100;
+        public static bool DisableKeybinds => _disableKeybinds?.Value ?? false;
+
+        internal static ConfigEntry<KeyboardShortcut> KeybindTraders;
+        internal static ConfigEntry<KeyboardShortcut> KeybindFlea;
+
+        // ------------------------------------------------------------------ sounds
+
+        private static ConfigEntry<bool> _traderSellSound;
+        private static ConfigEntry<bool> _fleaListingSound;
+        private static ConfigEntry<string> _soundMode;
+
+        public static bool TraderSellSound => _traderSellSound?.Value ?? true;
+        public static bool FleaListingSound => _fleaListingSound?.Value ?? true;
+        public static bool PlaySellSoundPerItem =>
+            string.Equals(_soundMode?.Value, "Per item", StringComparison.OrdinalIgnoreCase);
+
+        // ------------------------------------------------------------------ tooltips
+
+        private static ConfigEntry<bool> _showPriceTooltips;
+        private static ConfigEntry<bool> _showTraderPriceInTooltip;
+        private static ConfigEntry<bool> _showFleaPriceInTooltip;
+        private static ConfigEntry<bool> _showPricesInRaid;
+        private static ConfigEntry<bool> _enableColorCoding;
+        private static ConfigEntry<bool> _useAmmoPenetrationTiers;
+        internal static ConfigEntry<float> TooltipDelayEntry;
+        private static ConfigEntry<bool> _debugLogging;
+
+        public static bool ShowPriceTooltips => _showPriceTooltips?.Value ?? true;
+        public static bool ShowTraderPriceInTooltip => _showTraderPriceInTooltip?.Value ?? true;
+        public static bool ShowFleaPriceInTooltip => _showFleaPriceInTooltip?.Value ?? true;
+        public static bool ShowPricesInRaid => _showPricesInRaid?.Value ?? true;
+        public static bool EnableColorCoding => _enableColorCoding?.Value ?? true;
+        public static bool UseAmmoPenetrationTiers => _useAmmoPenetrationTiers?.Value ?? true;
+
+        public static bool OverrideTooltipDelay = true;
+        public static float TooltipDelay => TooltipDelayEntry?.Value ?? 0.2f;
+        public static bool DebugLogging => _debugLogging?.Value ?? false;
+
+        // ------------------------------------------------------------------ colors (config.json)
+
+        // These stay in config.json because they are arrays - six colours and two five-value
+        // threshold lists. They would need twenty separate entries to live in the F12 menu, and
+        // they are set once and forgotten rather than adjusted during play.
+        public static string BestTradeColor = "FFFFFF";
+        public static double[] PriceTierThresholds = { 900, 12000, 21000, 38000, 92000 };
+        public static double[] AmmoTierThresholds = { 15, 25, 34, 43, 55 };
+        public static string[] TierColorHexes = { "9D9D9D", "FFFFFF", "1EFF00", "0070DD", "A335EE", "FF8000" };
+
+        // ------------------------------------------------------------------ UI Fixes
+
+        public static bool EnableUIFixesIntegration = false;
+
+        public static bool UIFixesDetected => false;
+
+        // ------------------------------------------------------------------ startup
+
+        public override void Load()
+        {
+            LogSource = Log;
+            try
+            {
+                LoadCore();
+            }
+            catch (Exception ex)
+            {
+                Log.LogError($"QuickSell: plugin load failed: {ex}");
+            }
+        }
+
+        private void LoadCore()
+        {
+            // A Fika headless client has no player and no UI. Running here would achieve nothing
+            // and would add another client fetching the price table at startup.
+            if (ModEnvironment.IsHeadlessClient)
+            {
+                Log.LogInfo("QuickSell: headless client detected, plugin disabled.");
+                return;
+            }
+
+            LoadColorConfig();
+            BindSellingSettings();
+            BindTooltipSettings();
+            BindColorInfo();
+            BindSoundSettings();
+            BindDebugSettings();
+
+            EnableUIFixesIntegration = UIFixesDetected;
+            Log.LogInfo("QuickSell: config bound, enabling patches...");
+
+            Safe("ContextMenu.Show", new ContextMenuShowPatch());
+            Safe("ContextMenu.ShowMenu", new ContextMenuShowMenuPatch());
+
+            if (ShowPriceTooltips)
+            {
+                Safe("Tooltip", new TooltipPatch());
+                Safe("TooltipCacheInvalidation", TooltipCacheInvalidationPatch.Enable);
+                Safe("MenuPrecompute", new MenuPrecomputePatch());
+                Safe("InventoryPrecompute", new InventoryPrecomputePatch());
+            }
+            if (OverrideTooltipDelay) Safe("TooltipDelay", () => { TooltipDelayPatch.TryEnable(); });
+
+            if (!DisableKeybinds) Safe("Keybinds", KeybindPatches.Enable);
+
+            if (ShowPriceTooltips && ShowFleaPriceInTooltip)
+                Safe("FleaPriceClient.Fetch", () => { FleaPriceClient.FetchAsync(); });
+
+            Log.LogInfo("QuickSell: patch enable pass finished.");
+        }
+
+        private static void Safe(string what, ModulePatch patch)
+        {
+            try
+            {
+                patch.Enable();
+                var target = patch.TargetMethod;
+                LogSource?.LogInfo($"QuickSell: {what} -> {(target == null ? "<null>" : target.DeclaringType?.Name + "." + target.Name)}");
+            }
+            catch (Exception ex)
+            {
+                LogSource?.LogError($"QuickSell: {what} failed: {ex}");
+            }
+        }
+
+        private static void Safe(string what, Action action)
+        {
+            try
+            {
+                action();
+                LogSource?.LogInfo($"QuickSell: {what} enabled.");
+            }
+            catch (Exception ex)
+            {
+                LogSource?.LogError($"QuickSell: {what} failed: {ex}");
+            }
+        }
+
+        private void BindSellingSettings()
+        {
+            _enableQuickSellFlea = Config.Bind(SectionSelling, "Flea market entry", true,
+                new ConfigDescription(
+                    "Show \"QuickSell (Flea)\" when you right-click an item in your stash.",
+                    null, new ConfigurationManagerAttributes { Order = 100 }));
+
+            _enableQuickSellTraders = Config.Bind(SectionSelling, "Trader entry", true,
+                new ConfigDescription(
+                    "Show \"QuickSell (Trader)\" when you right-click an item in your stash.\n\n" +
+                    "Sells to whichever trader offers the most.",
+                    null, new ConfigurationManagerAttributes { Order = 99 }));
+
+            _showConfirmationDialog = Config.Bind(SectionSelling, "Ask before selling", true,
+                new ConfigDescription(
+                    "Show a confirmation window with the total price before anything is sold.\n\n" +
+                    "Turning this off sells immediately with no undo. Selling cannot be reversed, " +
+                    "so leaving it on is recommended if you use the keybinds.",
+                    null, new ConfigurationManagerAttributes { Order = 98 }));
+
+            _avgPricePercent = Config.Bind(SectionSelling, "Flea listing price (%)", 100,
+                new ConfigDescription(
+                    "What percentage of the average flea price to list items at.\n\n" +
+                    "100 = the average price shown on the add-offer window.\n" +
+                    "Below 100 undercuts the market so items sell faster.\n" +
+                    "Above 100 asks more than average. Range: 25% to 200%.",
+                    new AcceptableValueRange<int>(25, 200),
+                    new ConfigurationManagerAttributes { Order = 97 }));
+
+            // The flea line in the tooltip shows the price QuickSell will actually list at, not
+            // the raw market average. Changing the percentage only affects formatting/math, so the
+            // expensive precomputed market-price cache can stay intact; just discard finished
+            // tooltip strings so the next hover reflects the new percentage immediately.
+            _avgPricePercent.SettingChanged += (_, _) => TooltipPatch.Invalidate();
+
+            _ignoreFleaCapacity = Config.Bind(SectionSelling, "Ignore offer slot limit", false,
+                new ConfigDescription(
+                    "Skip the check for free flea offer slots.\n\n" +
+                    "Normally QuickSell refuses to list more items than you have slots for. With " +
+                    "this on it will try anyway, and the server rejects whatever does not fit.",
+                    null, new ConfigurationManagerAttributes { Order = 96 }));
+
+            _sellFromContainers = Config.Bind(SectionSelling, "Sell from backpack, rig and pockets", true,
+                new ConfigDescription(
+                    "Lets you sell items sitting in your backpack, tactical rig or pockets, not just " +
+                    "the stash.\n\n" +
+                    "Handy for clearing out what you brought back from a raid without moving it to " +
+                    "the stash first.\n\n" +
+                    "Your secure container is never included, whatever this is set to.",
+                    null, new ConfigurationManagerAttributes { Order = 90 }));
+
+            _sellFromSecureContainer = Config.Bind(SectionSelling, "Sell from secure container", false,
+                new ConfigDescription(
+                    "Lets you sell items inside your secure container.\n\n" +
+                    "Off by default. A secure container usually holds the things you least want to " +
+                    "lose, selling cannot be undone, and with UI Fixes multi-select a mis-click " +
+                    "takes several items at once.",
+                    null, new ConfigurationManagerAttributes { Order = 89 }));
+
+            _tradersBlacklist = Config.Bind(SectionSelling, "Never sell to", "",
+                new ConfigDescription(
+                    "Traders to exclude when looking for the best price. Separate names with commas.\n\n" +
+                    "Example:  Fence, Ragman\n\n" +
+                    "Use the trader's name exactly as it appears in game. Capitalisation and spaces " +
+                    "around the commas do not matter. Modded traders work the same as vanilla ones - " +
+                    "just type their name.\n\n" +
+                    "The \"Traders on this profile\" box below lists everything you can put here, so " +
+                    "you can copy names straight out of it. If a name will not match (non-English " +
+                    "clients show translated names), a trader's ID works here too.\n\n" +
+                    "Leave empty to allow every trader.",
+                    null, new ConfigurationManagerAttributes { Order = 95 }));
+
+            _tradersBlacklist.SettingChanged += (_, _) =>
+            {
+                _blacklistCache = null;
+                TooltipPatch.Invalidate();
+            };
+
+            _availableTraders = Config.Bind(SectionSelling, "Traders on this profile", "",
+                new ConfigDescription(
+                    "Every trader QuickSell can sell to, including any added by mods.\n\n" +
+                    "A reference list for the \"Never sell to\" box above. It fills in once your " +
+                    "profile has loaded and the traders are known.",
+                    null,
+                    new ConfigurationManagerAttributes
+                    {
+                        // Drawn rather than edited: a plain string setting renders as a one-line
+                        // text box, which both invites typing into a read-only list and cuts the
+                        // list off at the edge of the field. The drawer wraps instead.
+                        CustomDrawer = AvailableTradersDrawer,
+                        HideDefaultButton = true,
+                        Order = 94
+                    }));
+
+            _disableKeybinds = Config.Bind(SectionSelling, "Disable keybinds (restart required)", false,
+                new ConfigDescription(
+                    "Turn off the quick-sell keybinds entirely.\n\n" +
+                    "Restart required: the keybinds are wired into the game's UI when the mod loads, " +
+                    "so this cannot be switched on or off mid-session.",
+                    null, new ConfigurationManagerAttributes { Order = 93 }));
+
+            KeybindFlea = Config.Bind(SectionSelling, "Sell on flea (key)", new KeyboardShortcut(KeyCode.N),
+                new ConfigDescription(
+                    "Sells the item under the cursor on the flea market.\n\n" +
+                    "Works on a multi-selection when UI Fixes is installed.",
+                    null, new ConfigurationManagerAttributes { Order = 92 }));
+
+            KeybindTraders = Config.Bind(SectionSelling, "Sell to trader (key)", new KeyboardShortcut(KeyCode.M),
+                new ConfigDescription(
+                    "Sells the item under the cursor to the best-paying trader.\n\n" +
+                    "Works on a multi-selection when UI Fixes is installed.",
+                    null, new ConfigurationManagerAttributes { Order = 91 }));
+        }
+
+        private void BindTooltipSettings()
+        {
+            _showPriceTooltips = Config.Bind(SectionTooltips, "Show prices on tooltips", true,
+                new ConfigDescription(
+                    "Add price lines to the tooltip when you hover an item.\n\n" +
+                    "Restart required to turn back on once disabled.",
+                    null, new ConfigurationManagerAttributes { Order = 100 }));
+
+            _showTraderPriceInTooltip = Config.Bind(SectionTooltips, "Show best trader price", true,
+                new ConfigDescription(
+                    "Show which trader pays the most for the item, and how much.\n\n" +
+                    "Only available outside raid, since trader data is not loaded during one.",
+                    null, new ConfigurationManagerAttributes { Order = 99 }));
+
+            _showFleaPriceInTooltip = Config.Bind(SectionTooltips, "Show flea price", true,
+                new ConfigDescription(
+                    "Show the average flea market price for the item.\n\n" +
+                    "Needs the QuickSell server mod for prices to be available in raid. Without it, " +
+                    "prices are looked up one item at a time and only outside raid.",
+                    null, new ConfigurationManagerAttributes { Order = 98 }));
+
+            _showPricesInRaid = Config.Bind(SectionTooltips, "Show prices in raid", true,
+                new ConfigDescription(
+                    "Show flea prices on items while you are in a raid, so you can judge what is " +
+                    "worth the space.\n\n" +
+                    "Prices come from a table loaded before the raid started - nothing is fetched " +
+                    "from the server mid-raid, so this costs no performance.\n\n" +
+                    "Turn it off if you would rather not know item values while looting.",
+                    null, new ConfigurationManagerAttributes { Order = 97 }));
+
+            TooltipDelayEntry = Config.Bind(SectionTooltips, "Tooltip delay (seconds)", 0.2f,
+                new ConfigDescription(
+                    "How long the cursor must rest on an item before its price tooltip appears.\n\n" +
+                    "0.00 = instant. Prices show the moment the cursor touches an item, but sweeping " +
+                    "across a full stash makes the mod calculate a tooltip for every item it passes " +
+                    "over, which can show up as stutter.\n\n" +
+                    "0.20 (default) = the cursor has to settle briefly. Items you skim past are never " +
+                    "calculated at all, so fast looting stays smooth while a deliberate hover still " +
+                    "feels immediate.\n\n" +
+                    "1.00 = maximum pause. Cheapest possible, but you wait a full second on every item.\n\n" +
+                    "Each item is only ever calculated once, so hovering something a second time is " +
+                    "free no matter what this is set to.",
+                    new AcceptableValueRange<float>(0f, 1f),
+                    new ConfigurationManagerAttributes { Order = 96 }));
+
+            _enableColorCoding = Config.Bind(SectionTooltips, "Color prices by value", true,
+                new ConfigDescription(
+                    "Tint prices by how valuable the item is, so you can judge it at a glance " +
+                    "instead of reading the number.\n\n" +
+                    "Grey is near worthless, then white, green, blue, purple, and orange for the " +
+                    "most valuable.\n\n" +
+                    "Based on price per inventory slot, not total price, so a large item has to be " +
+                    "worth more to reach the same colour.",
+                    null, new ConfigurationManagerAttributes { Order = 95 }));
+
+            _useAmmoPenetrationTiers = Config.Bind(SectionTooltips, "Color ammo by penetration", true,
+                new ConfigDescription(
+                    "Color ammo by armour penetration rather than by price.\n\n" +
+                    "A cheap round that punches through armour is worth more to you than an " +
+                    "expensive one that does not, so price is a poor guide for ammo.\n\n" +
+                    "Turn off to color ammo by price like everything else.",
+                    null, new ConfigurationManagerAttributes { Order = 94 }));
+
+            Config.Bind(SectionTooltips, "Refresh flea prices", string.Empty,
+                new ConfigDescription(
+                    "Fetch flea prices from the server again. Menu only, not during a raid.\n\n" +
+                    "Prices are loaded once when the game starts. Use this if another mod has " +
+                    "changed flea prices since then and you want the tooltips to catch up.",
+                    null,
+                    new ConfigurationManagerAttributes
+                    {
+                        CustomDrawer = RefreshFleaPricesDrawer,
+                        HideDefaultButton = true,
+                        Order = 93
+                    }));
+        }
+
+        private void BindSoundSettings()
+        {
+            _traderSellSound = Config.Bind(SectionSounds, "Trader sell sound", true,
+                new ConfigDescription(
+                    "Play the trade-complete sound after QuickSell successfully sells to a trader.",
+                    null, new ConfigurationManagerAttributes { Order = 100 }));
+
+            _fleaListingSound = Config.Bind(SectionSounds, "Flea listing sound", true,
+                new ConfigDescription(
+                    "Play the trade-complete sound after QuickSell successfully lists an item on the flea market.",
+                    null, new ConfigurationManagerAttributes { Order = 99 }));
+
+            _soundMode = Config.Bind(SectionSounds, "Sound mode", "Once per batch",
+                new ConfigDescription(
+                    "Once per batch = play one sound for a multi-item QuickSell operation.\n\n" +
+                    "Per item = play the sound once for every item that sells or lists successfully.",
+                    new AcceptableValueList<string>("Once per batch", "Per item"),
+                    new ConfigurationManagerAttributes { Order = 98 }));
+        }
+
+        private void BindColorInfo()
+        {
+            // A read-only note rather than a setting: the colours themselves are arrays, which do
+            // not fit the F12 menu, so this points at where they actually live.
+            Config.Bind(SectionColors, "Where to edit colors", string.Empty,
+                new ConfigDescription(
+                    "Tier colors and their thresholds are edited in:\n\n" +
+                    "BepInEx\\plugins\\QuickSell\\config.json\n\n" +
+                    "TierColors      - six hex colors, cheapest to most valuable\n" +
+                    "PriceTierThresholds - the price-per-slot bands those colors map to\n" +
+                    "AmmoTierThresholds  - the penetration bands used for ammo\n" +
+                    "BestTradeColor  - highlight on whichever option pays more\n\n" +
+                    "They are in a file rather than here because each one is a list of values, " +
+                    "which this menu cannot edit.\n\n" +
+                    "Restart the game after editing. Delete the file to go back to defaults.",
+                    null,
+                    new ConfigurationManagerAttributes
+                    {
+                        CustomDrawer = ColorInfoDrawer,
+                        HideDefaultButton = true,
+                        Order = 100
+                    }));
+        }
+
+        private void RefreshFleaPricesDrawer(ConfigEntryBase entry)
+        {
+            if (GUILayout.Button("Refresh flea prices now", GUILayout.ExpandWidth(true)))
+            {
+                // Cached tooltips hold the old prices, so they go with them.
+                TooltipPatch.Invalidate();
+                FleaPriceClient.ForceRefresh();
+            }
+        }
+
+        private static GUIStyle _listStyle;
+
+        private void AvailableTradersDrawer(ConfigEntryBase entry)
+        {
+            var value = _availableTraders?.Value;
+
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                GUILayout.Label("Load your profile to see the list.", GUILayout.ExpandWidth(true));
+                return;
+            }
+
+            // wordWrap is what stops the list being cut off after the first line. Built once and
+            // reused, since a drawer runs every frame the menu is open.
+            _listStyle ??= new GUIStyle(GUI.skin.label) { wordWrap = true };
+
+            GUILayout.Label(value, _listStyle, GUILayout.ExpandWidth(true));
+        }
+
+        private void ColorInfoDrawer(ConfigEntryBase entry)
+        {
+            _listStyle ??= new GUIStyle(GUI.skin.label) { wordWrap = true };
+
+            GUILayout.Label(
+                "Colors and thresholds are edited in BepInEx\\plugins\\QuickSell\\config.json - " +
+                "they are lists of values, which this menu cannot edit. Restart the game after " +
+                "changing them.",
+                _listStyle, GUILayout.ExpandWidth(true));
+        }
+
+        private void BindDebugSettings()
+        {
+            _debugLogging = Config.Bind(SectionDebug, "Debug logging", false,
+                new ConfigDescription(
+                    "Write lightweight QuickSell cache/performance diagnostics to LogOutput.log.\n\n" +
+                    "Off by default. Enable only while testing a problem.",
+                    null, new ConfigurationManagerAttributes { Order = 1 }));
+        }
+
+        internal static void DebugLog(string message)
+        {
+            if (!DebugLogging) return;
+            LogSource?.LogInfo("[QSPERF] " + message);
+        }
+
+        // ------------------------------------------------------------------ trader blacklist
+
+        private static HashSet<string> _blacklistCache;
+
+        /// <summary>
+        /// True when a trader should be skipped. Matches on display name OR id.
+        ///
+        /// Matching the id as well matters for non-English clients, where LocalizedName is
+        /// translated and an English name typed into the box would silently never match.
+        /// </summary>
+        public static bool IsBlacklisted(string traderName, string traderId)
+        {
+            var blacklist = _blacklistCache ??= ParseBlacklist(_tradersBlacklist?.Value);
+            if (blacklist.Count == 0) return false;
+
+            return (traderName != null && blacklist.Contains(traderName.Trim()))
+                || (traderId != null && blacklist.Contains(traderId.Trim()));
+        }
+
+        private static HashSet<string> ParseBlacklist(string raw)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(raw)) return set;
+
+            foreach (var part in raw.Split(','))
+            {
+                var trimmed = part.Trim();
+                if (trimmed.Length > 0) set.Add(trimmed);
+            }
+
+            return set;
+        }
+
+        /// <summary>
+        /// Fills the reference list in the F12 menu once traders are known. Called by TraderService
+        /// when it first loads them, because they do not exist at startup.
+        /// </summary>
+        public static void PublishTraderList(IEnumerable<string> traderNames)
+        {
+            if (_availableTraders == null) return;
+
+            var names = traderNames?.Where(n => !string.IsNullOrWhiteSpace(n)).ToArray();
+            if (names == null || names.Length == 0) return;
+
+            _availableTraders.Value = string.Join(", ", names);
+        }
+
+        // ------------------------------------------------------------------ colour config file
+
+        private void LoadColorConfig()
+        {
+            try
+            {
+                var modPath = Path.GetDirectoryName(typeof(Plugin).Assembly.Location);
+                if (string.IsNullOrEmpty(modPath)) return;
+
+                var configPath = Path.Combine(modPath, "config.json");
+                if (!File.Exists(configPath)) return;   // defaults are fine; the file is optional
+
+                var config = JObject.Parse(File.ReadAllText(configPath));
+
+                if (config.ContainsKey("BestTradeColor"))
+                    BestTradeColor = ((string)config["BestTradeColor"]).TrimStart('#');
+
+                // Wrong-length arrays are rejected rather than partially applied: a four-entry
+                // threshold list would silently mis-tier everything above it.
+                if (config.ContainsKey("PriceTierThresholds"))
+                {
+                    var v = config["PriceTierThresholds"].ToObject<double[]>();
+                    if (v?.Length == 5) PriceTierThresholds = v;
+                    else Log.LogWarning("QuickSell: PriceTierThresholds needs exactly 5 values; using defaults.");
+                }
+
+                if (config.ContainsKey("AmmoTierThresholds"))
+                {
+                    var v = config["AmmoTierThresholds"].ToObject<double[]>();
+                    if (v?.Length == 5) AmmoTierThresholds = v;
+                    else Log.LogWarning("QuickSell: AmmoTierThresholds needs exactly 5 values; using defaults.");
+                }
+
+                if (config.ContainsKey("TierColors"))
+                {
+                    var v = config["TierColors"].ToObject<string[]>();
+                    if (v?.Length == 6) TierColorHexes = v.Select(c => c.TrimStart('#')).ToArray();
+                    else Log.LogWarning("QuickSell: TierColors needs exactly 6 values; using defaults.");
+                }
+            }
+            catch (Exception e)
+            {
+                Log.LogError($"QuickSell: could not read config.json, using default colors: {e.Message}");
+            }
+        }
+    }
+}
