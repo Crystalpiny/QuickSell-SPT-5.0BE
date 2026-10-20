@@ -152,8 +152,8 @@ namespace QuickSell
             EnableUIFixesIntegration = UIFixesDetected;
             Log.LogInfo("QuickSell: config bound, enabling patches...");
 
-            Safe("ContextMenu.Show", new ContextMenuShowPatch());
-            Safe("ContextMenu.ShowMenu", new ContextMenuShowMenuPatch());
+            Safe("InventoryItemContextInteractions ctor", new InventoryItemContextCtorPatch());
+            Safe("InventoryItemContextInteractions interactions", new InventoryItemContextInteractionsPatch());
 
             if (ShowPriceTooltips)
             {

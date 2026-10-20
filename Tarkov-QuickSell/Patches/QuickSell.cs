@@ -5,6 +5,7 @@ using EFT.Trading;
 using EFT.UI;
 using EFT.UI.Ragfair;
 using EFT.Utilities;
+using HarmonyLib;
 using SPTushonka.Reflection.Patching;
 using SPTushonka.Reflection.Utils;
 using System;
@@ -58,6 +59,43 @@ namespace QuickSell.Patches
             // 直接把愿望单/弹夹快速装弹等原版菜单弄坏。
             if (contextInteractions is ContextInteractions<EItemInfoButton> typed)
                 ContextMenuPatch.AddQuickSellEntries(typed, item);
+        }
+    }
+
+    /// <summary>
+    /// 5.0 的 SimpleContextMenu.Show&lt;T&gt;/ShowMenu&lt;T&gt; 所有泛型实例共用同一段 native body，
+    /// 给 EItemInfoButton 打 Harmony detour 会连带破坏 Wishlist/MagPreset 等其它 T 的菜单
+    /// （MethodAccessException）。改为在 InventoryItemContextInteractions 构造完成后
+    /// 直接把 QuickSell 条目写进它的 dynamic interactions，不再碰泛型 Show。
+    /// </summary>
+    internal class InventoryItemContextCtorPatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod()
+            => AccessTools.GetDeclaredConstructors(typeof(InventoryItemContextInteractions))
+                .FirstOrDefault(ctor => !ctor.IsStatic);
+
+        [PatchPostfix]
+        private static void Postfix(InventoryItemContextInteractions __instance)
+        {
+            if (__instance == null) return;
+            var item = __instance.Item;
+            if (item == null) return;
+            ContextMenuPatch.AddQuickSellEntries(__instance, item);
+        }
+    }
+
+    internal class InventoryItemContextInteractionsPatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod()
+            => AccessTools.Method(typeof(InventoryItemContextInteractions), "get_AvailableInteractions");
+
+        [PatchPrefix]
+        private static void Prefix(InventoryItemContextInteractions __instance)
+        {
+            if (__instance == null) return;
+            var item = __instance.Item;
+            if (item == null) return;
+            ContextMenuPatch.AddQuickSellEntries(__instance, item);
         }
     }
 
