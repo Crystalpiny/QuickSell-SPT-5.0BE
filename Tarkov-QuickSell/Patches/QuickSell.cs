@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using Il2CppInterop.Runtime.InteropTypes;
 using TMPro;
 using UIFixesInterop;
 using UnityEngine;
@@ -33,8 +34,15 @@ namespace QuickSell.Patches
         protected override MethodBase GetTargetMethod() => ContextMenuPatch.FindMenuMethod("Show");
 
         [PatchPrefix]
-        private static void Prefix(ContextInteractions<EItemInfoButton> contextInteractions, Item item)
-            => ContextMenuPatch.AddQuickSellEntries(contextInteractions, item);
+        private static void Prefix(object contextInteractions, Item item)
+        {
+            // 5.0 的 SimpleContextMenu.Show<T>/ShowMenu<T> 由所有 T 共用同一段 native body，
+            // Harmony 补丁会对 Wishlist/MagPreset 等其它 T 的调用一起生效。这里必须用 object
+            // 接收并按类型过滤，否则 IL2CPP 会在参数绑定阶段抛 MethodAccessException，
+            // 直接把愿望单/弹夹快速装弹等原版菜单弄坏。
+            if (contextInteractions is ContextInteractions<EItemInfoButton> typed)
+                ContextMenuPatch.AddQuickSellEntries(typed, item);
+        }
     }
 
     internal class ContextMenuShowMenuPatch : ModulePatch
@@ -42,8 +50,15 @@ namespace QuickSell.Patches
         protected override MethodBase GetTargetMethod() => ContextMenuPatch.FindMenuMethod("ShowMenu");
 
         [PatchPrefix]
-        private static void Prefix(ContextInteractions<EItemInfoButton> contextInteractions, Item item)
-            => ContextMenuPatch.AddQuickSellEntries(contextInteractions, item);
+        private static void Prefix(object contextInteractions, Item item)
+        {
+            // 5.0 的 SimpleContextMenu.Show<T>/ShowMenu<T> 由所有 T 共用同一段 native body，
+            // Harmony 补丁会对 Wishlist/MagPreset 等其它 T 的调用一起生效。这里必须用 object
+            // 接收并按类型过滤，否则 IL2CPP 会在参数绑定阶段抛 MethodAccessException，
+            // 直接把愿望单/弹夹快速装弹等原版菜单弄坏。
+            if (contextInteractions is ContextInteractions<EItemInfoButton> typed)
+                ContextMenuPatch.AddQuickSellEntries(typed, item);
+        }
     }
 
     /// <summary>Selling logic, shared by the context menu entries and the keybinds.</summary>
